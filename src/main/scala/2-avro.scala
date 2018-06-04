@@ -1,9 +1,14 @@
 package lc2018
 
 import org.apache.avro.{LogicalTypes, _}
-import matryoshka._, implicits._, patterns.EnvT
+import matryoshka._
+import implicits._
+import patterns.EnvT
+
 import scala.collection.immutable.ListMap
-import scalaz._, Scalaz._
+import scalaz._
+import Scalaz._
+import org.apache.avro.Schema.Type
 
 import scala.language.higherKinds
 import scala.collection.JavaConverters._
@@ -72,8 +77,8 @@ trait Labelling {
 
     case (path, t) =>
       t.project match {
-        case StructF(fields) => EnvT((path, StructF(fields.map(x => (x._1, (x._1 :: path, x._2))))))
-        case x               => EnvT((path, x.map((path, _))))
+        case StructF(fields) => EnvT((path, StructF(fields.map(x => (x._1, (path :+ x._1, x._2))))))
+        case other           => EnvT((path, other.map((path, _))))
       }
   }
 
@@ -88,9 +93,8 @@ trait Labelling {
     (x: Labelled[Schema]) => {
       x.lower match {
         case StructF(fields) =>
-          val fs = SchemaBuilder.record(x.ask.mkString(".")).fields
-          for ((name, t) <- fields) {
-            fs.name("name").`type`(t).noDefault()
+          val fs = fields.foldLeft(SchemaBuilder.record(x.ask.mkString("a", ".", "z")).fields) {
+            case (builder, (name, t)) => builder.name(name).`type`(t).noDefault()
           }
           fs.endRecord()
 
@@ -135,11 +139,11 @@ trait UsingARegistry {
         val fp = fingerprint(fields)
         if (registry.contains(fp)) (registry, registry(fp))
         else {
-          val schema = SchemaBuilder.record(fp.toString).fields
-          for ((name, t) <- fields) {
-            schema.name("name").`type`(t).noDefault()
+          val fs = fields.foldLeft(SchemaBuilder.record("r%x".format(fp)).fields) {
+            case (builder, (name, t)) => builder.name(name).`type`(t).noDefault()
           }
-          val sch = schema.endRecord()
+          val sch = fs.endRecord()
+
           (registry + (fp -> sch), sch)
         }
       }
@@ -157,22 +161,25 @@ trait UsingARegistry {
   }
 
   implicit def schemaFTraverse: Traverse[SchemaF] = new Traverse[SchemaF] {
-    override def traverseImpl[G[_], A, B](fa: SchemaF[A])(f: A => G[B])(implicit ev: Applicative[G]): G[SchemaF[B]] = {
+    override def traverseImpl[G[_], A, B](fa: SchemaF[A])(f: A => G[B])(implicit G: Applicative[G]): G[SchemaF[B]] =
       fa match {
         case StructF(fields) =>
-
-          val x = fields.map { case (k, v) => (k, f(v)) }
-
-        case ArrayF(element) =>
-        case BooleanF() =>
-        case DateF() =>
-        case DoubleF() =>
-        case FloatF() =>
-        case IntegerF() =>
-        case LongF() =>
-        case StringF() =>
+          val (ks, vs) = fields.unzip
+          vs.toList
+            .traverse(f)
+            .map(v => {
+              val z = ListMap(ks.toList.zip(v): _*)
+              StructF(z)
+            })
+        case ArrayF(element) => f(element).map(ArrayF.apply)
+        case BooleanF()      => G.point(BooleanF())
+        case DateF()         => G.point(DateF())
+        case DoubleF()       => G.point(DoubleF())
+        case FloatF()        => G.point(FloatF())
+        case IntegerF()      => G.point(IntegerF())
+        case LongF()         => G.point(LongF())
+        case StringF()       => G.point(StringF())
       }
-    }
   }
 
   def toAvro[T](schemaF: T)(implicit T: Recursive.Aux[T, SchemaF]): Schema =
@@ -187,5 +194,25 @@ trait AvroCoalgebra {
     * we need a CoalgebraM, but we're not really interested in providing meaningful errors
     * here, so we can use Option as our monad.
     */
-  def avroToSchemaF: CoalgebraM[Option, SchemaF, Schema] = TODO
+  def avroToSchemaF: CoalgebraM[Option, SchemaF, Schema] = a => { // A => M[F[A]], Schema => Option[SchemaF[Schema]]
+    a.getType match {
+      case Type.RECORD => Some(StructF(ListMap(a.getFields.asScala.map(field => (field.name(), field.schema())): _*)))
+      case Type.ENUM   => None
+      case Type.ARRAY  => Some(ArrayF(a.getElementType))
+      case Type.MAP    => None
+      case Type.UNION  => None
+      case Type.FIXED  => None
+      case Type.STRING => Some(StringF())
+      case Type.BYTES  => None
+      case Type.INT    => Some(IntegerF())
+      case Type.LONG =>
+        if (a.getLogicalType != null)
+          if (a.getLogicalType.getName == LogicalTypes.timestampMillis.getName) Some(DateF()) else None
+        else Some(LongF())
+      case Type.FLOAT   => Some(FloatF())
+      case Type.DOUBLE  => Some(DoubleF())
+      case Type.BOOLEAN => Some(BooleanF())
+      case Type.NULL    => None
+    }
+  }
 }

@@ -6,7 +6,7 @@ import matryoshka._, implicits._, data.Fix, Fix._
 import matryoshka.scalacheck.arbitrary._
 import scalaz._, Scalaz._
 
-class AvroSpec extends Properties("Avro-related algebras") with SchemaToAvroAlgebras {
+object AvroSpec extends Properties("Avro-related algebras") with SchemaToAvroAlgebras {
 
   import SchemaF._
 

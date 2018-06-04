@@ -212,7 +212,7 @@ trait SchemaFArbitrary {
         A.arbitrary.map(x => ArrayF(x)),
         for {
           n       <- Gen.choose(1, 10) // prevent unbounded lists
-          names   <- Gen.listOfN(n, Gen.alphaStr).map(_.distinct)
+          names   <- Gen.listOfN(n, Gen.alphaStr.filter(_.nonEmpty)).map(_.distinct)
           schemas <- Gen.listOfN(n, A.arbitrary)
         } yield StructF(ListMap(names.zip(schemas): _*))
       )
