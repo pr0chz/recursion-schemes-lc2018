@@ -67,7 +67,15 @@ trait Labelling {
     * but modified such that its "content" is not just a "smaller schema" as it was initially, but a new "seed"
     * consisting of a (larger) path, and the said "smaller schema".
     */
-  def labelNodesWithPath[T](implicit T: Recursive.Aux[T, SchemaF]): Coalgebra[Labelled, (Path, T)] = TODO
+  def labelNodesWithPath[T](implicit T: Recursive.Aux[T, SchemaF]): Coalgebra[Labelled, (Path, T)] = {
+    // A => F[A]
+
+    case (path, t) =>
+      t.project match {
+        case StructF(fields) => EnvT((path, StructF(fields.map(x => (x._1, (x._1 :: path, x._2))))))
+        case x               => EnvT((path, x.map((path, _))))
+      }
+  }
 
   /**
     * Now the algebra (that we had no way to write before) becomes trivial. All we have to do is to use
@@ -76,7 +84,26 @@ trait Labelling {
     * To extract the label (resp. node) of an EnvT you can use pattern-matching (EnvT contains only a pair
     * (label, node)), or you can use the `ask` and `lower` methods that return the label and node respectively.
     */
-  def labelledToSchema: Algebra[Labelled, Schema] = TODO
+  def labelledToSchema: Algebra[Labelled, Schema] =
+    (x: Labelled[Schema]) => {
+      x.lower match {
+        case StructF(fields) =>
+          val fs = SchemaBuilder.record(x.ask.mkString(".")).fields
+          for ((name, t) <- fields) {
+            fs.name("name").`type`(t).noDefault()
+          }
+          fs.endRecord()
+
+        case ArrayF(element) => SchemaBuilder.array().items(element)
+        case BooleanF()      => Schema.create(Schema.Type.BOOLEAN)
+        case DateF()         => LogicalTypes.timestampMillis().addToSchema(Schema.create(Schema.Type.LONG))
+        case DoubleF()       => Schema.create(Schema.Type.DOUBLE)
+        case FloatF()        => Schema.create(Schema.Type.FLOAT)
+        case IntegerF()      => Schema.create(Schema.Type.INT)
+        case LongF()         => Schema.create(Schema.Type.LONG)
+        case StringF()       => Schema.create(Schema.Type.STRING)
+      }
+    }
 
   def schemaFToAvro[T](schemaF: T)(implicit T: Recursive.Aux[T, SchemaF]): Schema =
     (List.empty[String], schemaF).hylo(labelledToSchema, labelNodesWithPath)
@@ -102,9 +129,51 @@ trait UsingARegistry {
 
   def fingerprint(fields: Map[String, Schema]): Int = fields.hashCode
 
-  def useARegistry: AlgebraM[Registry, SchemaF, Schema] = TODO
+  def useARegistry: AlgebraM[Registry, SchemaF, Schema] = {
+    case StructF(fields) =>
+      State { registry =>
+        val fp = fingerprint(fields)
+        if (registry.contains(fp)) (registry, registry(fp))
+        else {
+          val schema = SchemaBuilder.record(fp.toString).fields
+          for ((name, t) <- fields) {
+            schema.name("name").`type`(t).noDefault()
+          }
+          val sch = schema.endRecord()
+          (registry + (fp -> sch), sch)
+        }
+      }
 
-  implicit def schemaFTraverse: Traverse[SchemaF] = TODO
+    case ArrayF(field) =>
+      State.state(SchemaBuilder.array.items(field))
+
+    case BooleanF() => State.state(Schema.create(Schema.Type.BOOLEAN))
+    case DateF()    => State.state(LogicalTypes.timestampMillis().addToSchema(Schema.create(Schema.Type.LONG)))
+    case DoubleF()  => State.state(Schema.create(Schema.Type.DOUBLE))
+    case FloatF()   => State.state(Schema.create(Schema.Type.FLOAT))
+    case IntegerF() => State.state(Schema.create(Schema.Type.INT))
+    case LongF()    => State.state(Schema.create(Schema.Type.LONG))
+    case StringF()  => State.state(Schema.create(Schema.Type.STRING))
+  }
+
+  implicit def schemaFTraverse: Traverse[SchemaF] = new Traverse[SchemaF] {
+    override def traverseImpl[G[_], A, B](fa: SchemaF[A])(f: A => G[B])(implicit ev: Applicative[G]): G[SchemaF[B]] = {
+      fa match {
+        case StructF(fields) =>
+
+          val x = fields.map { case (k, v) => (k, f(v)) }
+
+        case ArrayF(element) =>
+        case BooleanF() =>
+        case DateF() =>
+        case DoubleF() =>
+        case FloatF() =>
+        case IntegerF() =>
+        case LongF() =>
+        case StringF() =>
+      }
+    }
+  }
 
   def toAvro[T](schemaF: T)(implicit T: Recursive.Aux[T, SchemaF]): Schema =
     schemaF.cataM(useARegistry).run(Map.empty)._2
